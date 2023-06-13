@@ -16,39 +16,52 @@ import math
 
 
 CLIENT_ID = str(random.random())
-EPOCH = int(os.environ.get('EPOCH'))
-MQTT_PORT = int(os.environ.get('MQTT_PORT'))
-MQTT_IP = os.environ.get('MQTT_IP')
-TEST_NUM = int(os.environ.get('TEST_NUM'))
-NUM = int(os.environ.get('NUM'))
-EDGE_NAME=os.environ.get('EDGE_NAME')
-RESULT_ROOT = os.environ.get('RESULT_ROOT')
+EPOCH = int(os.environ.get("EPOCH"))
+MQTT_PORT = int(os.environ.get("MQTT_PORT"))
+MQTT_IP = os.environ.get("MQTT_IP")
+TEST_NUM = int(os.environ.get("TEST_NUM"))
+NUM = int(os.environ.get("NUM"))
+EDGE_NAME = os.environ.get("EDGE_NAME")
+RESULT_ROOT = os.environ.get("RESULT_ROOT")
 BATCH_SIZE = 48
+
+
 class Femnist(Dataset):
     def __init__(self, data_path, train=True, transform=None):
-
         self.train = train
         self.transform = transform
 
         if self.train:
             self.train_x = []
             self.train_y = []
-            for number in range(NUM,NUM+2):
-                with open(data_path + 'all_data_' + str(number) + '_niid_0_keep_0_train_9.json', 'r') as f:
+            for number in range(NUM, NUM + 2):
+                with open(
+                    data_path
+                    + "all_data_"
+                    + str(number)
+                    + "_niid_0_keep_0_train_9.json",
+                    "r",
+                ) as f:
                     train = json.load(f)
-                    for u in train['users']:
-                        self.train_x += train['user_data'][u]['x']
-                        self.train_y += train['user_data'][u]['y']
+                    for u in train["users"]:
+                        self.train_x += train["user_data"][u]["x"]
+                        self.train_y += train["user_data"][u]["y"]
 
         else:
             self.test_x = []
             self.test_y = []
-            for number in range(NUM,NUM+2):
-                with open(data_path + 'all_data_' + str(number) + '_niid_0_keep_0_test_9.json', 'r') as f:
+            for number in range(NUM, NUM + 2):
+                with open(
+                    data_path
+                    + "all_data_"
+                    + str(number)
+                    + "_niid_0_keep_0_test_9.json",
+                    "r",
+                ) as f:
                     test = json.load(f)
-                    for u in test['users']:
-                        self.test_x += test['user_data'][u]['x']
-                        self.test_y += test['user_data'][u]['y']
+                    for u in test["users"]:
+                        self.test_x += test["user_data"][u]["x"]
+                        self.test_y += test["user_data"][u]["y"]
 
     def reshape_input(self, array):
         return np.asarray(array).reshape((28, 28, 1))
@@ -77,12 +90,12 @@ class Femnist(Dataset):
 
 
 train_data = Femnist(
-    './data/femnist/train/',
+    "./data/femnist/train/",
     train=True,
     transform=torchvision.transforms.ToTensor(),
 )
 test_data = Femnist(
-    './data/femnist/test/',
+    "./data/femnist/test/",
     train=False,
     transform=torchvision.transforms.ToTensor(),
 )
@@ -90,13 +103,35 @@ test_data = Femnist(
 train_loader = Data.DataLoader(dataset=train_data, batch_size=BATCH_SIZE, shuffle=True)
 test_loader = Data.DataLoader(dataset=test_data, batch_size=BATCH_SIZE, shuffle=True)
 
+
 def zerosgrad(Layers_shape):
+    """
+    Initializes a list of zero tensors with shapes corresponding to the model parameters.
+
+    Args:
+        Layers_shape (list): A list of the shapes of each layer in the model.
+
+    Returns:
+        zerograd (list): A list of zero tensors with the same shapes as the model parameters.
+    """
     zerograd = []
     for i in range(len(Layers_shape)):
         zerograd.append(torch.zeros(Layers_shape[i]))
     return zerograd
 
+
 def GetModelLayers(model):
+    """
+    Retrieves the number, shapes, and total number of nodes of each layer in the model.
+
+    Args:
+        model (torch.nn.Module): The PyTorch model to inspect.
+
+    Returns:
+        Layers_num (int): The total number of layers in the model.
+        Layers_shape (list): A list of the shapes of each layer in the model.
+        Layers_nodes (list): A list of the total number of nodes in each layer.
+    """
     Layers_shape = []
     Layers_nodes = []
     for idx, params in enumerate(model.parameters()):
@@ -104,95 +139,131 @@ def GetModelLayers(model):
         Layers_shape.append(params.shape)
         Layers_nodes.append(params.numel())
 
-    return Layers_num+1, Layers_shape, Layers_nodes
+    return Layers_num + 1, Layers_shape, Layers_nodes
+
 
 def Clipb(Clipbound, Layers_nodes, style="Flat"):
+    """
+    Computes the clipping bounds for each layer in the model.
+
+    Args:
+        Clipbound (list): The global clipping bound or a list of per-layer clipping bounds.
+        Layers_nodes (list): The total number of nodes in each layer.
+        style (str, optional): The clipping style, either 'Flat' for a single global clipping bound,
+            or 'Per-Layer' for per-layer clipping bounds. Defaults to 'Flat'.
+
+    Returns:
+        ClipBound (list): The computed clipping bound(s).
+    """
     Layer_nodes = torch.tensor(Layers_nodes).float()
     if style == "Flat":
         ClipBound = Clipbound
     if style == "Per-Layer":
-        ClipBound = Layer_nodes/Layer_nodes.norm() * Clipbound
+        ClipBound = Layer_nodes / Layer_nodes.norm() * Clipbound
     return ClipBound
 
+
 def Clip(Tensor, ClipBound):
+    """
+    Clips the gradients of the model parameters.
+
+    Args:
+        Tensor (list): The list of gradient tensors for each model parameter.
+        ClipBound (float or list): The clipping threshold(s).
+
+    Returns:
+        Tensor (list): The list of clipped gradient tensors.
+        Indicator (torch.Tensor): A binary tensor indicating whether the gradient of each layer was clipped.
+    """
     norm = 0
     Layers_num = len(Tensor)
     Tuple_num = torch.ones(Layers_num)
     for i in range(Layers_num):
-        norm = norm + Tensor[i].float().norm()**2
+        norm = norm + Tensor[i].float().norm() ** 2
         Tuple_num[i] = Tensor[i].numel()
     norm = norm.sqrt()
     if len(ClipBound) == 1:
-        Indicator = 1*(norm<=ClipBound[0])
+        Indicator = 1 * (norm <= ClipBound[0])
         for i in range(Layers_num):
-            Tensor[i] = Tensor[i]*torch.min(torch.ones(1), ClipBound[0]/norm)
+            Tensor[i] = Tensor[i] * torch.min(torch.ones(1), ClipBound[0] / norm)
     if len(ClipBound) > 1:
         Indicator = torch.zeros(Layers_num)
         # ClipBound_layers = Tuple_num.float()/Tuple_num.norm()*ClipBound#
         for i in range(Layers_num):
             norm_layer = Tensor[i].float().norm()
-            Indicator[i] = 1*(norm_layer<=ClipBound[i])
-            Tensor[i] = Tensor[i]*torch.min(torch.ones(1), ClipBound[i]/norm_layer)
+            Indicator[i] = 1 * (norm_layer <= ClipBound[i])
+            Tensor[i] = Tensor[i] * torch.min(torch.ones(1), ClipBound[i] / norm_layer)
     return Tensor, Indicator
+
 
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
-        self.conv1 = nn.Sequential(        
+        self.conv1 = nn.Sequential(
             nn.Conv2d(
-                in_channels=1,              
-                out_channels=10,            
-                kernel_size=5,                            
-                  ),                              
-            nn.ReLU(),                     
-            nn.MaxPool2d(2),    
+                in_channels=1,
+                out_channels=10,
+                kernel_size=5,
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
         )
-        self.conv2 = nn.Sequential(        
+        self.conv2 = nn.Sequential(
             nn.Conv2d(
-                in_channels=10,             
-                out_channels=10,          
-                kernel_size=5,  
-                     
-                ),    
-            nn.ReLU(),                     
-            nn.MaxPool2d(2),              
+                in_channels=10,
+                out_channels=10,
+                kernel_size=5,
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
         )
         self.out = nn.Linear(10 * 4 * 4, 62)
-         
+
     def forward(self, x):
         x = self.conv1(x)
         x = self.conv2(x)
-        x = x.view(x.size(0), -1)         
+        x = x.view(x.size(0), -1)
         output = self.out(x)
         return output, x
-cnn=CNN()
+
+
+cnn = CNN()
 msgQueue = queue.Queue()
+
+
 def on_connect(mqttc, obj, flags, rc):
     print("rc: " + str(rc))
-def on_subscribe(client, userdata, mid, granted_qos): 
-    print('subscribe successful')
+
+
+def on_subscribe(client, userdata, mid, granted_qos):
+    print("subscribe successful")
+
+
 def on_publish(client, userdata, mid):
-    print('publish success')
+    print("publish success")
+
+
 def on_message(mqttc, obj, msg):
-    #print("received: " + msg.topic + " " + str(msg.qos))
+    # print("received: " + msg.topic + " " + str(msg.qos))
     msgQueue.put(msg.payload)
-client = mqtt.Client(client_id = CLIENT_ID)
+
+
+client = mqtt.Client(client_id=CLIENT_ID)
 client.on_connect = on_connect
-#client.on_subscribe = on_subscribe
-#client.on_publish = on_publish
+# client.on_subscribe = on_subscribe
+# client.on_publish = on_publish
 client.on_message = on_message
 client.connect(MQTT_IP, MQTT_PORT, 600)
 client.subscribe([("init", 2), ("mapa_params/" + CLIENT_ID, 2)])
 client.loop_start()
 
-if __name__=='__main__':
-
+if __name__ == "__main__":
     Layers_num, Layers_shape, Layers_nodes = GetModelLayers(cnn)
     p = cPickle.loads(msgQueue.get())
-    z=p[0]
-    G=p[1]
-    params =p[2]
-    for i,f in enumerate(cnn.parameters()):
+    z = p[0]
+    G = p[1]
+    params = p[2]
+    for i, f in enumerate(cnn.parameters()):
         f.data = params[i].float()
     for epoch in range(EPOCH):
         train_loss = 0
@@ -213,21 +284,54 @@ if __name__=='__main__':
                     total += float(test_y.size(0))
                     correct += float((pred_y == test_y.data.numpy()).astype(int).sum())
 
-                man_file1 = open(RESULT_ROOT + '[' + str(EDGE_NAME) + ']' + '[Mapa-Accuracy]' + '.txt', 'a')
+                man_file1 = open(
+                    RESULT_ROOT
+                    + "["
+                    + str(EDGE_NAME)
+                    + "]"
+                    + "[Mapa-Accuracy]"
+                    + ".txt",
+                    "a",
+                )
                 accuracy = correct / total
                 man_file1.write(str(accuracy) + "\n")
                 man_file1.close()
 
-                man_file2 = open(RESULT_ROOT + '[' + str(EDGE_NAME) + ']' + '[Mapa-TestLoss]' + '.txt', 'a')
+                man_file2 = open(
+                    RESULT_ROOT
+                    + "["
+                    + str(EDGE_NAME)
+                    + "]"
+                    + "[Mapa-TestLoss]"
+                    + ".txt",
+                    "a",
+                )
                 test_loss = test_loss / (i + 1)
                 man_file2.write(str(test_loss) + "\n")
                 man_file2.close()
 
-                man_file3 = open(RESULT_ROOT + '[' + str(EDGE_NAME) + ']' + '[Mapa-TrainLoss]' + '.txt', 'a')
+                man_file3 = open(
+                    RESULT_ROOT
+                    + "["
+                    + str(EDGE_NAME)
+                    + "]"
+                    + "[Mapa-TrainLoss]"
+                    + ".txt",
+                    "a",
+                )
                 man_file3.write(str(train_loss / (step + 1)) + "\n")
                 man_file3.close()
-                
-                print("step:",step,"acc:",accuracy,"loss: ",test_loss,"train_loss: ",train_loss/(step+1))
+
+                print(
+                    "step:",
+                    step,
+                    "acc:",
+                    accuracy,
+                    "loss: ",
+                    test_loss,
+                    "train_loss: ",
+                    train_loss / (step + 1),
+                )
             w_c1 = cnn.conv1[0].weight.grad
             b_c1 = cnn.conv1[0].bias.grad
             w_c2 = cnn.conv2[0].weight.grad
@@ -237,7 +341,7 @@ if __name__=='__main__':
             grads = [w_c1, b_c1, w_c2, b_c2, w_o, b_o]
             ClipBound = Clipb(G, Layers_nodes, style="Flat")
             grads_ = Clip(grads, ClipBound)[0]
-            payload=[grads_,ClipBound]
+            payload = [grads_, ClipBound]
             client.publish("mapa_grads/" + CLIENT_ID, cPickle.dumps(payload), 2)  #
             p = cPickle.loads(msgQueue.get())
             z = p[0]
@@ -245,9 +349,3 @@ if __name__=='__main__':
             params = p[2]
             for i, f in enumerate(cnn.parameters()):
                 f.data = params[i].float()
-
- 
-
-
-
-

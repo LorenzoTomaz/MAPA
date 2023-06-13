@@ -13,11 +13,14 @@ EPOCH = int(os.environ.get("EPOCH"))
 MQTT_PORT = int(os.environ.get("MQTT_PORT"))
 MQTT_IP = os.environ.get("MQTT_IP")
 RESULT_ROOT = os.environ.get("RESULT_ROOT")
+# batch size
 b = 48
+BATCH_SIZE = b
 msgQueue = queue.Queue()
 
 
 def init_grads(params):
+    """Initializes grads with zero tensors of the same shape as the parameters in params"""
     grads = []
     for i in range(len(params)):
         grads.append(torch.zeros(params[i].shape))
@@ -67,6 +70,7 @@ if __name__ == "__main__":
     params = InitializeParameters()
     for i in range(len(params)):
         Layers_nodes.append(params[i].numel())
+    # number of nodes from which updates are being simultaneosly received
     K_ASyn = 1
     # size of the dataset
     m = 93024
@@ -90,7 +94,7 @@ if __name__ == "__main__":
     L = 0.021
     # θ ∈(0,1) is used to control the reduction ratio.
     theta = torch.tensor([0.8])
-    # space radius?? maximum norm of the parameters across all devices?
+    # space radius?? maximum norm of the optimal solution
     R = 0.1
     # maximal delay
     tau = torch.tensor([3.0])
@@ -117,33 +121,47 @@ if __name__ == "__main__":
                 edgetopic = "mapa_params/" + edgetopic.split("/")[1]
                 edge_topic.append(edgetopic)
                 message_ = cPickle.loads(edgemsg)
+                # local model parameters in the form of a list of tensors (gradients)
                 grads = message_[0]
+                # clip bound
                 Clipbound = message_[1]
+                # Add the initial calculate for the weighted average of the gradients
                 for i in range(len(grads)):
                     grads_sum[i] += grads[i]
+            # Averages the model parameters based on the number of nodes from which updates are being received
             for i in range(len(grads_sum)):
                 grads_sum[i] /= K_ASyn
 
+            # adds noise to the average gradients
             grads_noise = Addnoise(grads_sum, Clipbound)
+            # updates the global model parameters using the cliped avg noise gradients
             for i in range(len(params)):
                 params[i] = params[i].float()
                 params[i] -= LR * grads_noise[i]
 
+            # updates the variance for gaussian noise, the privacy factor and the model parameters
             payload = [z, G, params]
             for i in range(len(edge_topic)):
+                # sends the new parameters to the clients
                 client.publish(edge_topic[i], cPickle.dumps(payload), 2)
 
             if step % 30 == 0:
+                # computes the privacy loss (the amount of privacy budget)
                 man_file = open(RESULT_ROOT + "[MAPA_Budget]" + ".txt", "a")
                 varepsilon = Privacy.ComputePrivacy(b / m, z, step + 1, delta, 32)
                 man_file.write(str(varepsilon) + "\n")
                 man_file.close()
 
             if epoch * (m / BATCH_SIZE) + step >= T0:
+                # reduces the noise level. The purpose of reducing G over time is to reduce the noise and improve the accuracy of the model as the training progresses
                 G = G * theta
+                # recalculates the noise variance
                 Delta_b = (SIGMA**2 + sum(Layers_nodes) * (z * G) ** 2) / b
+                # recalculates the P factor to recalculate the learning rate
                 P = max(2 * Delta_b / (theta**2 * G**2 * (tau + 1)), 1)
+                # adjust the learning rate
                 LR = 1 / (2 * P * L * (tau + 1))
+                # Recalculates the number of global updates that have to be completed before the noise parameter G is reduced
                 T0 = (
                     max(math.ceil(4 * P**2 * L * (tau + 1) ** 2 * R / Delta_b), 1)
                     + T0
